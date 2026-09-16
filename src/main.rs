@@ -1,3 +1,4 @@
+use std::fs::File;
 use std::io;
 use std::collections::HashMap;
 
@@ -98,11 +99,11 @@ impl VirtualDisk {
         self._next_node_id += 1; // TODO: check if it exists
     }
 
-    fn find_by_id(&self, id: u32) -> Option<&Node> {
+    fn find_by_id(&self, id: &u32) -> Option<&Node> {
         self.nodes.get(&id)
     }
 
-    fn find_by_id_mut(&mut self, id: u32) -> Option<&mut Node> {
+    fn find_by_id_mut(&mut self, id: &u32) -> Option<&mut Node> {
         self.nodes.get_mut(&id)
     }
 }
@@ -118,126 +119,158 @@ impl FileSystem {
         }
     }
 
-    fn get_current_folder(&mut self) -> &mut NodeType {
-        let current_node = match self.disk.find_by_id_mut(self.disk._next_node_id) {
-            Some(node) => match node.node_type {
-                NodeType::Directory { .. } => node,
-                NodeType::File { .. } => {panic!("WTF: current folder is File")}
-            },
-            None => {panic!("WTF: current folder is None")}
+    fn get_current_folder(&self) -> &NodeType {
+        let current_node = match self.disk.find_by_id(&self.disk.current_dir_id) {
+            Some(node) => node,
+            None => panic!("WTF: current folder is None"),
         };
 
-        &mut current_node.node_type
+        match &current_node.node_type {
+            NodeType::Directory { .. } => &current_node.node_type,
+            NodeType::File { .. } => panic!("WTF: current folder is File"),
+        }
     }
 
-    fn create_file(&mut self, name: String, content: String, folder: &mut NodeType) {
+    fn get_current_folder_mut(&mut self) -> &mut NodeType {
+        let current_dir_id = self.disk.current_dir_id;
+        let current_node = match self.disk.find_by_id_mut(&current_dir_id) {
+            Some(node) => node,
+            None => panic!("WTF: current folder is None"),
+        };
+
+        match &current_node.node_type {
+            NodeType::Directory { .. } => &mut current_node.node_type,
+            NodeType::File { .. } => panic!("WTF: current folder is File"),
+        }
+    }
+
+    fn create_file(&mut self, name: String, content: String) {
         let node_id = self.disk.add_node(Node::new(NodeType::new_file(content), &self.disk));
-        NodeType::add_file_to_folder(name, node_id, folder);
+        NodeType::add_file_to_folder(name, node_id, self.get_current_folder_mut());
     }
 
-    fn create_folder(&mut self, name: String, folder: &mut NodeType) {
-        NodeType::new_empty_folder(Some(self.disk.current_dir_id));
+    fn create_folder(&mut self, name: String) {
+        let new_folder = NodeType::new_empty_folder(Some(self.disk.current_dir_id));
+        let node_id = self.disk.add_node(Node::new(new_folder, &self.disk));
+        NodeType::add_file_to_folder(name, node_id, self.get_current_folder_mut());
+    }
+
+    fn read_file(&self, name: String) -> &String {
+        let node_id = {
+            let current_dir = self.get_current_folder();
+            match current_dir {
+                NodeType::Directory { nodes, .. } => {
+                    *nodes.get(&name).expect("Can not find file with this name")
+                },
+                NodeType::File { .. } => {panic!("Current folder can not be a file.");}
+            }
+        };
+        let content = match self.disk.find_by_id(&node_id) {
+            Some(n) => {
+                match &n.node_type {
+                    NodeType::File { content, .. } => {content},
+                    NodeType::Directory { .. } => {panic!("{name} is a directory")}
+                }
+            },
+            None => panic!("Can not find file with this name")
+        };
+
+        content
     }
 }
 
-fn touch(args: &[&str], disk: &mut VirtualDisk) {
+fn touch(args: &[&str], fs: &mut FileSystem) {
     if args.len() != 2 {
         println!("Invalid syntax. Expected: touch <name> <content>");
         return;
     }
-
-    let node = Node {
-        node_type: NodeType::File { 
-            content: args[1].to_string(), 
-            size_bytes: args[1].len() 
-        },
-        created_at_step: disk._current_step
-    };
-
     let file_name = args[0].to_string();
-    let this_node_id = disk._next_node_id;
-    let res = disk.add_node(node);
-    
-
-        let parent_folder: &mut Node = match disk.find_by_id_mut(disk.current_dir_id) {
-            Some(f) => f,
-            None => {panic!("WTF, pwd is None, LOL.");}
-        };
-        
-        match parent_folder.node_type {
-            NodeType::Directory { ref mut nodes, .. } => {
-                nodes.insert(file_name, this_node_id);
-            },
-            NodeType::File {..} => {
-                panic!("WFT?? Parent folder is FILE.");
-            }
-        }
-        
-        println!("File successfully created.");
-        return;
-    
-    
+    let content = args[1].to_string();
+    fs.create_file(file_name, content);
+    println!("File created.");
 }
 
-fn cat(args: &[&str], disk: &VirtualDisk) {
+fn cat(args: &[&str], fs: &FileSystem) {
     if args.len() != 1 {
-        println!("Invalid syntax. Expected: cat <node_id>.");
+        println!("Invalid syntax. Expected: cat <file_name>.");
         return;
     }
-
-    let node_id: u32 = match args[0].parse() {
-        Ok(id) => id,
-        Err(_) => {
-            println!("Invalid id.");
-            return;
-        }
-    };
-
-    let node: &Node = match disk.find_by_id(node_id) {
-        Some(n) => n,
-        None => {
-            println!("Node does not exist.");
-            return;
-        }
-    };
-
-    match &node.node_type {
-        NodeType::File { content, size_bytes } => {
-            println!("File size: {} bytes.", size_bytes);
-            println!("Content:\n{}", content);
-        },
-        NodeType::Directory {..} => {
-            println!("This is a directory.");
-        }
-    }
+    let file_name = args[0].to_string();
+    let content = fs.read_file(file_name);
+    println!("{content}");
 }
 
-fn mkdir(args: &[&str], disk: &mut VirtualDisk) {
+fn mkdir(args: &[&str], fs: &mut FileSystem) {
 
     if args.len() != 1 {
         println!("Invalid syntax. Example: mkdir <name> .");
         return;
     }
 
-    let dir = Node {
-        node_type: NodeType::Directory { 
-            nodes: HashMap::new(),
-            parent_id: Some(disk.current_dir_id)
-        },
-        created_at_step: disk._current_step  
-    };
-
-    let res = disk.add_node(dir);
-
+    let folder_name = args[0].to_string();
+    fs.create_folder(folder_name);
     println!("Directory successfully created.");
 }
 
-fn ls(args: &[&str], disk: &mut VirtualDisk) {
-    todo!("");
+fn ls(args: &[&str], fs: &FileSystem) {
+    if !args.is_empty() {
+        println!("Invalid syntax. Expected: ls.");
+        return;
+    }
+
+    let mut entries: Vec<&String> = match fs.get_current_folder() {
+        NodeType::Directory { nodes, .. } => nodes.keys().collect(),
+        NodeType::File { .. } => return,
+    };
+
+    entries.sort();
+    for entry in entries {
+        println!("{entry}");
+    }
 }
 
-fn cd(args: &[&str], disk: &mut VirtualDisk) {
-    todo!("");
+fn cd(args: &[&str], fs: &mut FileSystem) {
+    if args.len() != 1 {
+        println!("Invalid syntax. Example: cd <folder_name>/<..> .");
+        return;
+    }
+
+    let path = args[0];
+    let current_dir_id = fs.disk.current_dir_id;
+    
+    if path == ".." {
+        let parent_id = match fs.disk.find_by_id(&current_dir_id) {
+            Some(Node { node_type: NodeType::Directory { parent_id, .. }, .. }) => *parent_id,
+            _ => None,
+        };
+
+        if let Some(parent_id) = parent_id {
+            fs.disk.current_dir_id = parent_id;
+        } else {
+            println!("Already at the root directory.");
+        }
+    } else {
+        let child_id = match fs.get_current_folder() {
+            NodeType::Directory { nodes, .. } => match nodes.get(path) {
+                Some(id) => *id,
+                None => {
+                    println!("Directory not found: {path}");
+                    return;
+                }
+            },
+            NodeType::File { .. } => return,
+        };
+
+        match fs.disk.find_by_id(&child_id) {
+            Some(Node { node_type: NodeType::Directory { .. }, .. }) => {
+                fs.disk.current_dir_id = child_id;
+            }
+            Some(Node { node_type: NodeType::File { .. }, .. }) => {
+                println!("{path} is not a directory.");
+            }
+            None => println!("Directory not found: {path}"),
+        }
+    }
 }
 
 fn rm(args: &[&str], disk: &mut VirtualDisk) {
@@ -257,7 +290,7 @@ fn main() {
         Err(_) => panic!("Invalid size")
     };
     
-    let mut fs = VirtualDisk::new(size);
+    let mut fs = FileSystem::new();
 
     loop {
 
@@ -282,9 +315,9 @@ fn main() {
             "touch" => touch(&arguments, &mut fs),
             "mkdir" => mkdir(&arguments, &mut fs),
             "cat" => cat(&arguments, &fs),
-            "ls" => ls(&arguments, &mut fs),
+            "ls" => ls(&arguments, &fs),
             "cd" => cd(&arguments, &mut fs),
-            "rm" => rm(&arguments, &mut fs),
+            // "rm" => rm(&arguments, &mut fs),
             _ => println!("Invalid command")
         }
     }
