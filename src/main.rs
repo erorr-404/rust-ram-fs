@@ -1,5 +1,4 @@
-use std::fs::File;
-use std::io;
+use std::io::{self, Write};
 use std::collections::HashMap;
 
 enum NodeType {
@@ -36,13 +35,15 @@ impl NodeType {
         }
     }
 
-    fn add_file_to_folder(name: String, file_node_id: u32, folder: &mut NodeType) {
+    fn add_file_to_folder(name: String, file_node_id: u32, folder: &mut NodeType) -> Result<bool, String> {
         match folder {
             &mut NodeType::Directory { ref mut nodes, .. } => {
                 nodes.insert(name, file_node_id);
             },
-            &mut NodeType::File { .. } => {panic!("Folder can not be a file")}
+            &mut NodeType::File { .. } => {return Err("Can not add file to folder.".to_string());}
         }
+
+        Ok(true)
     }
 }
 
@@ -146,16 +147,16 @@ impl FileSystem {
 
     fn create_file(&mut self, name: String, content: String) {
         let node_id = self.disk.add_node(Node::new(NodeType::new_file(content), &self.disk));
-        NodeType::add_file_to_folder(name, node_id, self.get_current_folder_mut());
+        let _ = NodeType::add_file_to_folder(name, node_id, self.get_current_folder_mut());
     }
 
     fn create_folder(&mut self, name: String) {
         let new_folder = NodeType::new_empty_folder(Some(self.disk.current_dir_id));
         let node_id = self.disk.add_node(Node::new(new_folder, &self.disk));
-        NodeType::add_file_to_folder(name, node_id, self.get_current_folder_mut());
+        let _ = NodeType::add_file_to_folder(name, node_id, self.get_current_folder_mut());
     }
 
-    fn read_file(&self, name: String) -> &String {
+    fn read_file(&self, name: String) -> Result<&String, String> {
         let node_id = {
             let current_dir = self.get_current_folder();
             match current_dir {
@@ -169,13 +170,16 @@ impl FileSystem {
             Some(n) => {
                 match &n.node_type {
                     NodeType::File { content, .. } => {content},
-                    NodeType::Directory { .. } => {panic!("{name} is a directory")}
+                    NodeType::Directory { .. } => {
+                        println!("{name} is a directory");
+                        return Err(name + "is a directory");
+                    }
                 }
             },
-            None => panic!("Can not find file with this name")
+            None => {return Err("Can not find file with this name".to_string());}
         };
 
-        content
+        Ok(content)
     }
 }
 
@@ -197,7 +201,11 @@ fn cat(args: &[&str], fs: &FileSystem) {
     }
     let file_name = args[0].to_string();
     let content = fs.read_file(file_name);
-    println!("{content}");
+
+    match content {
+        Ok(s) => {println!("{s}");},
+        Err(e) => {eprintln!("{e}");}
+    }
 }
 
 fn mkdir(args: &[&str], fs: &mut FileSystem) {
@@ -218,13 +226,33 @@ fn ls(args: &[&str], fs: &FileSystem) {
         return;
     }
 
-    let mut entries: Vec<&String> = match fs.get_current_folder() {
-        NodeType::Directory { nodes, .. } => nodes.keys().collect(),
+    let mut buff: Vec<String> = Vec::new();
+
+    match fs.get_current_folder() {
+        NodeType::Directory { nodes, .. } => {
+            for (name, node_id) in nodes.iter() {
+                let node = fs.disk.find_by_id(node_id).unwrap();
+                match node.node_type {
+                    NodeType::File { size_bytes, .. } => {
+                        buff.push("f: ".to_owned() + name + " " + &size_bytes.to_string() + " bytes");
+                    }
+                    NodeType::Directory { .. } => {
+                        buff.push("d: ".to_owned() + name);
+                    }
+                }
+            }
+            
+        },
         NodeType::File { .. } => return,
     };
 
-    entries.sort();
-    for entry in entries {
+    if buff.is_empty() {
+        println!("Current folder is empty.");
+        return;
+    }
+
+    buff.sort();
+    for entry in buff {
         println!("{entry}");
     }
 }
@@ -277,6 +305,17 @@ fn rm(args: &[&str], disk: &mut VirtualDisk) {
     todo!("");
 }
 
+fn help() {
+    println!("Available commands:");
+    println!("  touch <name> <content>  Create a file with the specified content.");
+    println!("  mkdir <name>             Create a new directory.");
+    println!("  cat <file_name>          Display a file's contents.");
+    println!("  ls                      List files and directories in the current directory.");
+    println!("  cd <folder_name>         Change to a directory.");
+    println!("  cd ..                    Move to the parent directory.");
+    println!("  help                    Display this help message.");
+}
+
 fn main() {
     println!("Enter VirtualDisk size: ");
     let mut size = String::new();
@@ -285,16 +324,12 @@ fn main() {
         .read_line(&mut size)
         .expect("Can not read stdin");
     
-    let size: usize = match size.trim().parse() {
-        Ok(s) => s,
-        Err(_) => panic!("Invalid size")
-    };
-    
     let mut fs = FileSystem::new();
 
     loop {
 
         print!("> ");
+        io::stdout().flush().expect("Failed to flush the stdout");
 
         // get input from user
         let mut input = String::new();
@@ -312,11 +347,12 @@ fn main() {
 
         // execute command with given arguments
         match *command {
-            "touch" => touch(&arguments, &mut fs),
-            "mkdir" => mkdir(&arguments, &mut fs),
-            "cat" => cat(&arguments, &fs),
-            "ls" => ls(&arguments, &fs),
-            "cd" => cd(&arguments, &mut fs),
+            "touch" => touch(arguments, &mut fs),
+            "mkdir" => mkdir(arguments, &mut fs),
+            "cat" => cat(arguments, &fs),
+            "ls" => ls(arguments, &fs),
+            "cd" => cd(arguments, &mut fs),
+            "help" => help(),
             // "rm" => rm(&arguments, &mut fs),
             _ => println!("Invalid command")
         }
