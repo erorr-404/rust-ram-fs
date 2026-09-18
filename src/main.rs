@@ -35,7 +35,7 @@ impl NodeType {
         }
     }
 
-    fn add_file_to_folder(name: String, file_node_id: u32, folder: &mut NodeType) -> Result<bool, String> {
+    fn add_file_to_folder(name: String, file_node_id: u32, folder: &mut NodeType) -> Result<(), String> {
         match folder {
             &mut NodeType::Directory { ref mut nodes, .. } => {
                 nodes.insert(name, file_node_id);
@@ -43,7 +43,7 @@ impl NodeType {
             &mut NodeType::File { .. } => {return Err("Can not add file to folder.".to_string());}
         }
 
-        Ok(true)
+        Ok(())
     }
 }
 
@@ -181,6 +181,40 @@ impl FileSystem {
 
         Ok(content)
     }
+
+    fn remove_entry(&mut self, name: &str) -> Result<(), String>{
+        let target_id = match self.get_current_folder() {
+            NodeType::Directory { nodes, .. } => match nodes.get(name) {
+                Some(id) => *id,
+                None => {return Err(format!("No such file or directory."));}
+            },
+            NodeType::File { .. } => {return Err("Current node is not a directory.".to_string());}
+        };
+
+        match self.disk.find_by_id(&target_id) {
+            Some(node) => match &node.node_type {
+                NodeType::Directory { nodes, .. } => {
+                    if !nodes.is_empty() {
+                        return Err("Directory is not empty.".to_string());
+                    }
+
+                },
+                NodeType::File { .. } => {}
+            },
+            None => return Err("Inconsistent state: node ID not found on disk".to_string())
+        }
+
+        match self.get_current_folder_mut() {
+            NodeType::Directory { nodes, .. } => {
+                nodes.remove(name);
+            },
+            NodeType::File { .. } => unreachable!(),
+        }
+
+        self.disk.nodes.remove(&target_id);
+
+        Ok(())
+    }
 }
 
 fn touch(args: &[&str], fs: &mut FileSystem) {
@@ -301,8 +335,19 @@ fn cd(args: &[&str], fs: &mut FileSystem) {
     }
 }
 
-fn rm(args: &[&str], disk: &mut VirtualDisk) {
-    todo!("");
+fn rm(args: &[&str], fs: &mut FileSystem) {
+    if args.len() != 1 {
+        println!("Invalid syntax. Syntax example: rm <target>.");
+        return;
+    }
+
+    let target = args[0];
+    let res = fs.remove_entry(&target);
+
+    match res {
+        Ok(..) => {println!("Successfully removed {target}.")},
+        Err(e) => {eprintln!("{e}")}
+    }
 }
 
 fn help() {
@@ -313,6 +358,7 @@ fn help() {
     println!("  ls                      List files and directories in the current directory.");
     println!("  cd <folder_name>         Change to a directory.");
     println!("  cd ..                    Move to the parent directory.");
+    println!("  rm <target>              Remove file or directory.");
     println!("  help                    Display this help message.");
 }
 
@@ -353,7 +399,7 @@ fn main() {
             "ls" => ls(arguments, &fs),
             "cd" => cd(arguments, &mut fs),
             "help" => help(),
-            // "rm" => rm(&arguments, &mut fs),
+            "rm" => rm(&arguments, &mut fs),
             _ => println!("Invalid command")
         }
     }
